@@ -1,0 +1,87 @@
+---
+title: "Week 13 - Part I - Functional programming with Purrr - Continued"
+author: "Jose Luis Rodriguez Gil"
+date: "29/11/2022"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    theme: cosmo
+    highlight: tango
+    number_sections: true
+    keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, include=FALSE}
+library(tidyverse)
+library(janitor)
+library(here)
+
+library(fs) # Series of tools to work with fyle-systems
+
+```
+
+```{r my theme, include=FALSE}
+
+source(here("functions", "theme_pepe_full.R"))
+
+theme_set(theme_pepe_full())  #Sets the theme for all ggplot plots in this .Rmd file (no need to call it in the plot itself)
+
+```
+
+
+## Example III - Using purrr to load multiple files at once
+
+The approach we are going to take is to create a tibble with a column named `files` where we will list the address of all files contained in our target folder (in this case the `data` folder).
+
+After that, we will use `map()` to iterate through that list and read each of the files, then we will bind the rows to have one single file.
+
+```{r}
+
+combined_data <- tibble(files = fs::dir_ls(here("data", "batches"))) %>%  # we create a tibble of files in that folder. Remember we are in an .Rmd file, so we need to use here()
+  mutate(data = pmap(list(files), 
+                     ~ read_csv(..1, col_names = TRUE))) %>%  # We load each individual file as a tibble-within-a-tibble
+  select(data) %>% # select only the actual data tibbles
+  map_df(bind_rows) %>%  # bind them all into one tibble
+  clean_names() # clean the column names
+
+combined_data
+
+```
+
+What if we wanted to keep important information stored in the file name (e.g. the batch number in this case)?
+
+```{r}
+
+combined_data <- tibble(files = fs::dir_ls(here("data", "batches"))) %>%  # we create a tibble of files in that folder
+  mutate(data = pmap(list(files), 
+                     ~ read_csv(..1, col_names = TRUE))) %>%  # We load each individual file as a tibble-within-a-tibble
+  mutate(data = pmap(list(files, data), 
+                     ~ mutate(..2, source_file = as.character(..1)))) %>% # To each individual dataset we add the name of the file it came from (for reference)
+  select(data) %>% # select only the actual data tibbles
+  map_df(bind_rows) %>%  # bind them all into one tibble
+  clean_names() # clean the column names
+
+combined_data
+
+```
+
+Now we can use what we know of working with strings to get the batch numbe rinto its own column.
+
+```{r}
+
+combined_data %>% 
+  mutate(batch = stringr::str_extract(source_file, "(?<=Batch_)[:digit:]{1}")) %>% # extract the date using regex
+  select(-source_file) # we dont need it anymore
+
+```
+
+
+

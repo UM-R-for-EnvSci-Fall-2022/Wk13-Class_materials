@@ -1,0 +1,309 @@
+---
+title: "Week 12 - Part II - R as a GIS"
+author: "Jose Luis Rodriguez Gil"
+date: "30/11/2021"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    theme: cosmo
+    highlight: tango
+    number_sections: true
+    keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, include=FALSE}
+
+library(tidyverse)
+library(janitor)
+library(here)
+library(lubridate)
+library(viridis)
+library(gt)
+
+library(sf)     # sf will be our main tool to work with spatial data
+library(rgdal)  # Another common package, while on its way out. We will need it for some applications
+library(raster) # sf can only handle vector data, we need a special package for raster (grid) data
+
+library(ggspatial)  # for adding scale and north arrow to plots
+
+library(lakemorpho)  # USGS package for lake analysis
+
+```
+
+
+```{r my theme, include=FALSE}
+
+source(here("functions", "theme_pepe_full.R"))
+
+theme_set(theme_pepe_full())  #Sets the theme for all ggplot plots in this .Rmd file (no need to call it in the plot itself)
+
+```
+
+
+# Some resources
+
+1. [Geocomputation with R](https://geocompr.robinlovelace.net/)
+2. Nice [resource](https://thinking-spatial.org/courses/angewandte_geodatenverarbeitung/kurs06/) about the sf package
+
+
+# Loading some data
+
+We are going to use the dataset of water quality variables measured in Lake winnipeg in 2002-2004 that we used in previous classes:
+
+```{r}
+
+lw_data_original <- read_csv(here("data", "lake_winnipeg_chemistry_2002_2004.csv"))
+
+lw_data_original
+
+```
+
+
+But now we need as well a `.shp` layer with lake Winnipeg. This was extracted from the government of Canada [Water File - Lakes and Rivers (polygons) - 2011 Census](https://open.canada.ca/data/en/dataset/448ec403-6635-456b-8ced-d3ac24143add)
+
+```{r}
+
+lake_winnipeg <- read_sf(here("data", "lw", "lw.shp"))
+
+plot(lake_winnipeg, axes = TRUE)
+
+```
+
+# Manipulating the data
+
+We are going to clean up the water quality data and keep just the total phosphorus data for the surface depth in 2004
+
+```{r}
+
+lw_data <- lw_data_original %>% 
+  clean_names() %>% 
+  mutate(year = year(activity_start_date)) %>% 
+  filter(characteristic_name == "Total Phosphorus, mixed forms") %>% 
+  filter(activity_depth_height_measure == 0) %>% 
+  filter(year == 2004) %>% 
+  dplyr::select(monitoring_location_latitude,
+         monitoring_location_longitude,
+         result_value) %>% 
+  rename(total_phosphorus = result_value)
+
+print(lw_data)
+
+```
+
+
+# converting a dataframe into a geospatial object with `sf`
+
+We can turn this tibble into a proper geospatial (simple features) object with `sf`, we just need to specify the **Coordinates Reference System (CRS)**. The data set indicates that it is WG84 (typical for GPS). To simplify things we can use the **EPSG code 4326**.
+
+```{r}
+
+lw_data_sf <- st_as_sf(lw_data, coords = c("monitoring_location_longitude", "monitoring_location_latitude"), crs = 4326) # data listed as WGS84
+
+lw_data_sf
+
+```
+
+We can check the geospatial information for each of our layers.
+
+We can check what kind of geometries they are made of
+
+```{r}
+
+st_geometry(lake_winnipeg)
+
+```
+
+```{r}
+
+st_geometry(lw_data_sf)
+
+```
+
+And we can check their CRS
+
+```{r}
+
+st_crs(lake_winnipeg)
+
+```
+
+```{r}
+
+st_crs(lw_data_sf)
+
+```
+
+
+WE have a slight problem here. The lake layer is in a different CRS, so lets transform it into EPSG 4326 so they both match
+
+```{r}
+
+lw <- st_transform(lake_winnipeg, 4326)
+
+st_crs(lw)
+
+```
+
+
+# Ploting geospatial data with `ggplot`
+
+```{r}
+
+ggplot() +
+  geom_sf(data = lw, 
+          fill = "#c6def1", 
+          alpha = 0.7) +
+  geom_sf(data = lw_data_sf,
+          aes(colour = total_phosphorus),
+          alpha = 0.7,
+          show.legend = "point",
+          size = 1.1) +
+  
+  scale_colour_viridis(option = "magma") +
+  
+  coord_sf(datum = st_crs(4326)) +
+  
+  annotation_scale(location = "bl", 
+                   width_hint = 0.5,
+                   height = unit(0.1, "cm")) +
+  
+  annotation_north_arrow(location = "tr", which_north = "true",
+                         height = unit(0.6, "cm"),
+                         width = unit(0.3, "cm"),
+                         # pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"),
+                         style = north_arrow_orienteering(text_size = 5)) +
+  
+  labs(title = "Lake Winnipeg Total Phosphorus",
+       subtitle = "Surface total phosphorus - lake Winnipeg - 2004")
+
+```
+
+# Some basic operations
+
+`sf()` allows for many of the common operations that a GIS application would provide (for vector data). For example, we could add a 0.1 degree buffer around the lake, which we could use to, for example, assess if specific land uses around the shoreline are responsible for the Total Phosphorus concentrations, or to create flood risk maps.
+
+```{r}
+
+lw_buffer <- st_buffer(lake_winnipeg, units::set_units(0.1, degree))
+
+```
+
+We can plot this buffer
+
+```{r}
+
+
+ggplot() +
+  geom_sf(data = lw_buffer, 
+          fill = "#f9844a", 
+          colour = NA, 
+          alpha = 0.4) +
+  
+  geom_sf(data = lw, 
+          fill = "#c6def1", 
+          alpha = 0.7) +
+  
+  coord_sf(datum = st_crs(4326)) +
+  
+  annotation_scale(location = "bl", 
+                   width_hint = 0.5,
+                   height = unit(0.1, "cm")) +
+  
+  annotation_north_arrow(location = "tr", which_north = "true",
+                         height = unit(0.6, "cm"),
+                         width = unit(0.3, "cm"),
+                         # pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"),
+                         style = north_arrow_orienteering(text_size = 5))
+  
+```
+
+# Lakemorpho, a useful tool for lake geospatial analysis
+
+```{r}
+
+lake_260_original <- read_sf(here("data", "lake_260", "L260_outline_milne", "L260_outline_milne.shp"))
+
+
+lake_260_dem <- raster(here("data", "lake_260","DEM clip.tif"))
+
+```
+Unfortunatelly we need some pre-processing to make things "play nicely". As mentioned the `sf` package (simple features) is a more modern and kind of tidiverse friendly way of doing things, but sometimes we need to convert to other spatial formats to interact with other packages,
+
+```{r}
+
+lake_260 <- lake_260_original %>% as_Spatial()
+
+lake_260
+
+```
+
+```{r}
+
+plot(lake_260)
+
+```
+
+
+```{r}
+
+plot(lake_260_dem)
+
+```
+
+Lakemorpho has a function that automatically merges both layers and creates a buffer of the DEM around the lake
+
+```{r message=FALSE, warning=FALSE}
+
+lake_260_morph <- lakeSurroundTopo(lake_260, lake_260_dem, inCatch = NULL, reso = res(lake_260_dem)[1])
+
+plot(lake_260_morph)
+
+```
+
+But why do we need this... well, that file can now be use dto calculate a bunch of hings about the lake!
+
+For example, the [fetch](https://www.canr.msu.edu/news/understanding_lake_fetch):
+
+```{r message=FALSE, warning=FALSE}
+
+fetches_260 <- tibble(bearing = seq(0,360,10)) %>% 
+  mutate(fetch = map_dbl(.x = bearing, ~lakeFetch(lake_260_morph,.x))) %>% 
+  arrange(desc(fetch))
+
+print(fetches_260)
+
+```
+
+```{r}
+
+Lake_260_metrics <- calcLakeMetrics(lake_260_morph, 40, 250) %>% 
+  unlist() %>% 
+  as_tibble_row()
+
+print(Lake_260_metrics)
+
+```
+
+```{r}
+
+Lake_260_metrics %>% 
+  pivot_longer(cols = everything(), names_to = "parameter", values_to = "measure") %>% 
+  mutate(measure = round(measure, digits = 2)) %>% 
+  gt()
+
+```
+
+
+
+
+
+
+
